@@ -21,6 +21,25 @@ COPY --from=build --chown=app:app /app/build/libs/*-all.jar debut.jar
 
 USER app
 
-ENV JVM_OPTS="-XX:MaxRAMPercentage=75 -Xss256k -Djava.security.egd=file:/dev/./urandom"
+ENV JVM_OPTS="-XX:MaxRAMPercentage=70 \
+              -XX:InitialRAMPercentage=50 \
+              -Xss256k \
+              -XX:+UseG1GC \
+              -XX:MaxGCPauseMillis=100 \
+              -XX:+UnlockExperimentalVMOptions \
+              -XX:+UseContainerSupport \
+              -XX:+OptimizeStringConcat \
+              -XX:+UseStringDeduplication \
+              -XX:StringDeduplicationAgeThreshold=1 \
+              -XX:MaxMetaspaceSize=64m \
+              -XX:CompressedClassSpaceSize=32m \
+              -XX:ReservedCodeCacheSize=32m \
+              -XX:+TieredCompilation \
+              -XX:TieredStopAtLevel=1 \
+              -Djava.security.egd=file:/dev/./urandom \
+              -Djava.awt.headless=true \
+              -Dfile.encoding=UTF-8 \
+              -XX:+HeapDumpOnOutOfMemoryError \
+              -XX:HeapDumpPath=/app/data/"
 
 ENTRYPOINT ["sh", "-c", "java $JVM_OPTS -jar debut.jar"]
