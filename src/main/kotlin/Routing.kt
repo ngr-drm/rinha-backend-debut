@@ -1,7 +1,7 @@
 package com.rinha
 
-import com.rinha.lib.Activities.getPaymentsSummary
 import com.rinha.lib.Activities.queue
+import com.rinha.lib.Activities.toAudit
 import com.rinha.lib.PaymentRequest
 import io.ktor.server.application.*
 import io.ktor.server.request.*
@@ -36,7 +36,7 @@ fun Application.configureRouting() {
             val from = call.request.queryParameters["from"]!!
             val to = call.request.queryParameters["to"]!!
 
-            val summary = getPaymentsSummary(from, to)
+            val summary = toAudit(from, to)
             call.respond(io.ktor.http.HttpStatusCode.OK, summary)
         }
 

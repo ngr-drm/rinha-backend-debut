@@ -7,11 +7,13 @@ x-service-templates: &gateway-build
   deploy:
     resources:
       limits:
-        cpus: '0.4'
-        memory: '80MB'
+        cpus: '0.6'
+        memory: '125MB'
   environment:
     - REDIS_HOST=redis
     - REDIS_PORT=6379
+  volumes:
+    - sqlite-data:/app/data:rw
   networks:
     - api
     - payment-processor
@@ -33,7 +35,7 @@ services:
       resources:
         limits:
           cpus: '0.1'
-          memory: '20MB'
+          memory: '30MB'
     networks:
       - api
 
@@ -54,7 +56,7 @@ services:
       "redis-server",
       "--save 300 10",
       "--appendonly no",
-      "--maxmemory 20mb",
+      "--maxmemory 40mb",
       "--maxmemory-policy allkeys-lru"
     ]
     ports:
@@ -68,7 +70,7 @@ services:
       resources:
         limits:
           cpus: '0.2'
-          memory: '80MB'
+          memory: '100MB'
     networks:
       - api
 
@@ -80,3 +82,6 @@ networks:
     external: true
 
 
+volumes:
+  sqlite-data:
+    driver: local

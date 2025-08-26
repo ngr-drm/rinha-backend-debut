@@ -1,6 +1,6 @@
 package com.rinha
 
-import com.rinha.lib.Worker
+import com.rinha.lib.Workers
 import com.rinha.providers.RedisClient
 import com.rinha.providers.SQLiteManager
 import io.ktor.serialization.kotlinx.json.*
@@ -35,10 +35,10 @@ fun Application.module() {
 
     RedisClient.initialize()
     SQLiteManager.upPaymentsTable("data/payments.db")
-    Worker.start()
+    Workers.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        Worker.stop()
+        Workers.stop()
         RedisClient.close()
         SQLiteManager.closeAll()
     })

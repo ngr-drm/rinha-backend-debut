@@ -23,7 +23,7 @@ object RedisClient {
         pool = JedisPool(config, host, port)
     }
 
-    suspend fun <T> withJedis(block: suspend (Jedis) -> T) {
+    suspend fun <T> launchAsyncJedis(block: suspend (Jedis) -> T) {
         pool?.resource?.use { jedis ->
             block(jedis)
         }

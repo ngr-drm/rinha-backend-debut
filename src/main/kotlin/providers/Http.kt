@@ -24,7 +24,9 @@ object Http {
             })
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 10000
+            requestTimeoutMillis = 15000
+            connectTimeoutMillis = 1000
+            socketTimeoutMillis = 30000
         }
     }
 

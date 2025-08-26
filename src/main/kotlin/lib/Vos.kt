@@ -13,9 +13,9 @@ data class PaymentRequest(
 
 @Serializable
 data class Summary(
-    val totalRequests: Int,
+    val totalRequests: Int = 0,
     @Contextual
-    val amount: BigDecimal,
+    val amount: BigDecimal = 0.toBigDecimal(),
 )
 
 @Serializable
@@ -28,4 +28,10 @@ data class Payment(
     val order: PaymentRequest,
     var processed: Boolean = false,
     var processor: String? = null,
+)
+
+@Serializable
+data class ProcessorHealthResponse(
+    val failing: Boolean,
+    val minResponseTime: Long
 )

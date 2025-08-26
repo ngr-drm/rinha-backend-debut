@@ -9,47 +9,52 @@ import kotlin.concurrent.withLock
 
 object SQLiteManager {
 
-    private val connections = ConcurrentHashMap<String, Connection>()
+    private val writeConnections = ConcurrentHashMap<String, Connection>()
     private val dbLocks = ConcurrentHashMap<String, ReentrantLock>()
     private val initLock = ReentrantLock()
     private val logger = LoggerFactory.getLogger(SQLiteManager::class.java)
 
-    private fun getConnection(dbPath: String): Connection {
-        return connections.getOrPut(dbPath) {
+    private fun getWriteConnection(dbPath: String): Connection {
+        return writeConnections.getOrPut(dbPath) {
             initLock.withLock {
                 DriverManager.getConnection("jdbc:sqlite:$dbPath").apply {
                     if (!isClosed) {
-                        setPragmas(this)
+                        createStatement().use { stmt ->
+                            stmt.execute("PRAGMA journal_mode=WAL")
+                            stmt.execute("PRAGMA synchronous = NORMAL")
+                            stmt.execute("PRAGMA busy_timeout=10000")
+                            stmt.execute("PRAGMA cache_size=-10000")
+                            stmt.execute("PRAGMA temp_store=MEMORY")
+                            stmt.execute("PRAGMA mmap_size=33554432")
+                            stmt.execute("PRAGMA wal_autocheckpoint=1000")
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun setPragmas(conn: Connection) {
-        conn.createStatement().use { stmt ->
-            stmt.execute("PRAGMA journal_mode=WAL")
-            stmt.execute("PRAGMA synchronous = NORMAL")
-            stmt.execute("PRAGMA locking_mode=EXCLUSIVE")
-            stmt.execute("PRAGMA busy_timeout=5000")
-            stmt.execute("PRAGMA cache_size=-10000")
-            stmt.execute("PRAGMA temp_store=MEMORY")
-            stmt.execute("PRAGMA mmap_size=33554432")
-            stmt.execute("PRAGMA wal_autocheckpoint=100")
+
+    fun getReadConnection(dbPath: String): Connection {
+        return DriverManager.getConnection("jdbc:sqlite:$dbPath").apply {
+            createStatement().use { stmt ->
+                stmt.execute("PRAGMA journal_mode=WAL")
+                stmt.execute("PRAGMA read_uncommitted = true")
+            }
         }
     }
 
-    fun <T> executeWithLock(dbPath: String, block: (Connection) -> T): T {
+    fun <T> executeWriteWithLock(dbPath: String, block: (Connection) -> T): T {
         val dbLock = dbLocks.computeIfAbsent(dbPath) { ReentrantLock() }
 
         return dbLock.withLock {
-            val conn = getConnection(dbPath)
+            val conn = getWriteConnection(dbPath)
             block(conn)
         }
     }
 
     fun upPaymentsTable(dbPath: String) {
-        executeWithLock(dbPath) { conn ->
+        executeWriteWithLock(dbPath) { conn ->
             conn.createStatement().use { stmt ->
                 stmt.execute("""
                 CREATE TABLE IF NOT EXISTS payments (
@@ -71,8 +76,8 @@ object SQLiteManager {
     }
 
     fun closeAll() {
-        connections.values.forEach { safeClose(it) }
-        connections.clear()
+        writeConnections.values.forEach { safeClose(it) }
+        writeConnections.clear()
         dbLocks.clear()
     }
 

@@ -3,9 +3,9 @@ package com.rinha.lib
 import com.rinha.providers.Http.client
 import com.rinha.providers.RedisClient
 import com.rinha.providers.SQLiteManager
+import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
-import kotlinx.serialization.Serializable
 import org.slf4j.LoggerFactory
 
 object Activities {
@@ -14,7 +14,7 @@ object Activities {
 
     suspend fun queue(order: PaymentRequest){
 
-        RedisClient.withJedis { jedis ->
+        RedisClient.launchAsyncJedis { jedis ->
 
             val processed = false
 
@@ -28,9 +28,11 @@ object Activities {
         }
     }
 
-    fun getPaymentsSummary(from: String, to: String): Audit {
+    fun toAudit(from: String, to: String): Audit {
+
         lateinit var result: Audit
-        SQLiteManager.executeWithLock("data/payments.db") { conn ->
+
+        SQLiteManager.getReadConnection("data/payments.db").use { conn ->
             val sql = """
             SELECT 
                 processor,
@@ -48,8 +50,8 @@ object Activities {
                 ps.setString(2, to)
                 val rs = ps.executeQuery()
 
-                var default = Summary(0, 0.00.toBigDecimal())
-                var fallback = Summary(0, 0.00.toBigDecimal())
+                var default = Summary()
+                var fallback = Summary()
 
                 while (rs.next()) {
                     when (rs.getString("processor")) {
@@ -70,7 +72,8 @@ object Activities {
     }
 
     private fun recordPayment(payment: Payment) {
-        SQLiteManager.executeWithLock("data/payments.db") { conn ->
+
+        SQLiteManager.executeWriteWithLock("data/payments.db") { conn ->
             try {
                 conn.autoCommit = false
 
@@ -99,37 +102,110 @@ object Activities {
         }
     }
 
-    suspend fun makePayment(request: PaymentRequest): Boolean {
-        val primaryUrl = System.getenv("PAYMENT_PROCESSOR_DEFAULT_URL") ?: "http://payment-processor-default:8080/payments"
-        val fallbackUrl = System.getenv("PAYMENT_PROCESSOR_FALLBACK_URL") ?: "http://payment-processor-fallback:8080/payments"
-        var proof = false
+    suspend fun pay(request: PaymentRequest) {
+
+        lateinit var processor: String
+        lateinit var processorURL: String
 
         try {
-            proof = paymentProcessor(primaryUrl, request)
-            recordPayment(Payment(order = request, processed = proof, processor = "default"))
-            return proof
-
-        } catch (e: Exception) {
-            logger.warn("default flow failure: ${e.message}")
-            try {
-                proof = paymentProcessor(fallbackUrl, request)
-                recordPayment(Payment(order = request, processed = proof, processor = "fallback"))
-                return proof
-
-            } catch (e: Exception) {
-                logger.error("fallback flow failure: ${e.message}")
+            chooseProcessor().let { (service, url) ->
+                processor = service
+                processorURL = url
             }
+        }catch (e: Exception){
+            logger.warn("[STAGE 1] - reprocessing: ${request.correlationId}")
+            return queue(request)
         }
-        return proof
+
+        try {
+            val proof = send(processorURL, request)
+            try {
+                if (proof) {
+                    recordPayment(Payment(order = request, processed = true, processor = processor))
+                    logger.info("payment processed successfully: ${request.correlationId}")
+                } else {
+                    logger.warn("[STAGE 2] - reprocessing ${request.correlationId}")
+                    return queue(request)
+
+                }
+            } catch (e: Exception) {
+                logger.error("failed to record payment: ${request.correlationId}", e)
+                if( proof) {
+                    throw Exception("[critical] - a payment processed has not been stored")
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn("payment processor failure: ${e.message}", e)
+        }
     }
 
-    private suspend fun paymentProcessor(url: String, request: PaymentRequest): Boolean {
-        logger.info("boot payment processor: ${request.correlationId}")
-        val response = client.post(url) {
+    private suspend fun send(url: String, request: PaymentRequest): Boolean {
+
+        logger.info("calling payment processor: ${request.correlationId}")
+
+        val response = client.post("${url}/payments") {
             contentType(ContentType.Application.Json)
             setBody(request)
         }
         return response.status == HttpStatusCode.OK
     }
 
+    private suspend fun chooseProcessor(): Pair<String, String> {
+
+        val defaultURL = System.getenv("PAYMENT_PROCESSOR_DEFAULT_URL") ?: "http://payment-processor-default:8080"
+        val fallbackURL = System.getenv("PAYMENT_PROCESSOR_FALLBACK_URL") ?: "http://payment-processor-fallback:8080"
+
+        suspend fun checkHealth(url: String): Pair<Boolean, Long> {
+            return try {
+                val start = System.nanoTime()
+                val response = client.get("$url/payments/service-health")
+                val elapsed = (System.nanoTime() - start) / 1_000_000
+
+                if (response.status == HttpStatusCode.OK) {
+                    val health = response.body<ProcessorHealthResponse>()
+                    if (!health.failing) {
+                        return true to elapsed
+                    }
+                }
+                false to elapsed
+            } catch (e: Exception) {
+                logger.warn("health check failed for $url: ${e.message}", e)
+                false to Long.MAX_VALUE
+            }
+        }
+
+        var defaultHealthy = false
+        var defaultTime = Long.MAX_VALUE
+        var fallbackHealthy = false
+        var fallbackTime = Long.MAX_VALUE
+
+        checkHealth(defaultURL).let { (healthy, time) ->
+            if (healthy) {
+                defaultHealthy = true
+                defaultTime = time
+                return@let
+            }
+        }
+        checkHealth(fallbackURL).let { (healthy, time) ->
+            if (healthy) {
+                fallbackHealthy = true
+                fallbackTime = time
+                return@let
+            }
+        }
+
+        return when {
+            defaultHealthy && fallbackHealthy -> {
+                if (defaultTime > fallbackTime ) {
+                    logger.info("default is slower (${defaultTime}ms) than fallback (${fallbackTime}ms): using fallback processor!")
+                    "fallback" to fallbackURL
+                } else {
+                    "default" to defaultURL
+                }
+            }
+            defaultHealthy -> "default" to defaultURL
+            fallbackHealthy -> "fallback" to fallbackURL
+            else -> throw IllegalStateException("no healthy processor available")
+        }
+    }
 }
