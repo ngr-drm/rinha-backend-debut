@@ -1,68 +1,199 @@
 package com.rinha.lib
 
-import com.rinha.providers.RedisClient
+import com.rinha.lib.Activities.getHealthierGateway
+import com.rinha.providers.Http.client
+import com.rinha.providers.Redis
+import io.ktor.client.call.*
+import io.ktor.client.request.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
+import redis.clients.jedis.params.SetParams
+import java.util.*
+import kotlin.math.pow
 
-object Workers {
+object WorkerScope {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    fun stop() { scope.cancel() }
+}
 
-    private val logger = LoggerFactory.getLogger(Workers::class.java)
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    private val WORKERS = System.getenv("WORKERS")?.toIntOrNull() ?: 2
+object Health {
+    private val logger = LoggerFactory.getLogger(Health::class.java)
+    private var job: Job? = null
 
     fun start() {
-        repeat(WORKERS) { id ->
-            scope.launch {
-                logger.info("worker-$id started")
-                while (isActive) {
-                    try {
-                        processQueue()
-                        delay(100)
-                    } catch (e: Exception) {
-                        logger.error("worker-$id failed: ${e.message}", e)
-                        delay(100)
-                    }
+        if (job?.isActive == true) return
+        job = WorkerScope.scope.launch {
+            while (isActive) {
+                try {
+                    healthCheckLoop()
+                } catch (e: Exception) {
+                    logger.warn("health check error: ${e.message}")
                 }
+                delay(5_000)
             }
         }
     }
 
     fun stop() {
-        scope.cancel()
+        job?.cancel()
     }
 
-    private suspend fun processQueue() {
-        RedisClient.launchAsyncJedis { jedis ->
-            val uuid = jedis.rpop("payments:queue") ?: run {
-                delay(50)
-                return@run
+    private suspend fun healthCheckLoop() {
+        val defaultHealth = fetchHealth(Activities.defaultURL)
+        val fallbackHealth = fetchHealth(Activities.fallbackURL)
+
+        val checkedAt = System.currentTimeMillis() / 1000.0
+
+        val (url, name) = when {
+            defaultHealth.failing -> {
+                Pair(Activities.fallbackURL, "fallback")
             }
-
-            val key = "payments:$uuid"
-            val fields = jedis.hgetAll(key)
-
-            if (fields.isEmpty()) {
-                logger.warn("no payment in queue")
-                return@launchAsyncJedis
+            defaultHealth.minResponseTime < 250 -> {
+                Pair(Activities.defaultURL, "default")
             }
-
-            logger.info("processing payment: $uuid")
-
-            val order = PaymentRequest(
-                correlationId = fields["correlation_id"]!!,
-                amount = fields["amount"]!!.toBigDecimal(),
-                requestedAt = fields["requested_at"]!!
-            )
-
-            try {
-                Activities.pay(order)
-                jedis.del(key)
-            } catch (e: Exception) {
-                logger.error("failed to process payment $uuid: ${e.message}")
+            !fallbackHealth.failing && fallbackHealth.minResponseTime < defaultHealth.minResponseTime  -> {
+                Pair(Activities.fallbackURL, "fallback")
             }
+            else -> {
+                Pair(Activities.defaultURL, "default")
+            }
+        }
 
+        val cacheData = """{"data":["$url","$name"],"ts":$checkedAt}"""
+        Redis.withJedis { jedis ->
+            jedis.set("gateway_status", cacheData)
+            jedis.expire("gateway_status", 10)
         }
     }
 
+    private suspend fun fetchHealth(url: String): ProcessorHealthResponse {
+        return try {
+            val response = client.get("$url/payments/service-health")
+            if (response.status.value != 200) {
+                ProcessorHealthResponse(failing = true, minResponseTime = 10_000)
+            } else {
+                response.body()
+            }
+        } catch (e: Exception) {
+            logger.warn("Health check failed for $url: ${e.message}")
+            ProcessorHealthResponse(failing = true, minResponseTime = 10_000)
+        }
+    }
 }
+
+object Inbound {
+    private val logger = LoggerFactory.getLogger(Inbound::class.java)
+    private val queue = Queue<QueuedPayment>()
+    private val maxWorkers = System.getenv("MAX_CONCURRENT_PAYMENTS")?.toIntOrNull() ?: 2
+
+    @Volatile private var started = false
+
+    fun start() {
+        if (started) return
+        synchronized(this) {
+            if (started) return
+            started = true
+
+            repeat(maxWorkers) { workerId ->
+                WorkerScope.scope.launch {
+                    dequeue(workerId)
+                }
+            }
+        }
+    }
+
+    private suspend fun dequeue(workerId: Int) {
+        while (true) {
+            try {
+                val item = queue.get()
+                pay(item, workerId)
+            } catch (e: Exception) {
+                logger.error("worker-$workerId general error: ${e.message}")
+                delay(100)
+            }
+        }
+    }
+
+    private suspend fun pay(queued: QueuedPayment, workerId: Int) {
+        val request = queued.request
+        val attempts = queued.retries
+
+        try {
+            val (gatewayUrl, gatewayName) = getHealthierGateway()
+
+            if (Activities.sendPayment(gatewayUrl, request)) {
+                Activities.confirm(request, gatewayName)
+                return
+            }
+
+            throw Exception("Payment rejected by gateway")
+        } catch (e: Exception) {
+            if (attempts + 1 >= MAX_RETRIES) {
+                logger.error("[PERMANENT_FAILURE] worker-$workerId: ${request.correlationId} after ${attempts + 1} attempts")
+                return
+            }
+
+            val backoffMs = (1000L * 2.0.pow(attempts.toDouble())).toLong().coerceAtMost(15000L)
+            delay(backoffMs)
+            try {
+                queue.put(QueuedPayment(request, attempts + 1))
+            } catch (queueError: Exception) {
+                logger.error("[QUEUE_ERROR] worker-$workerId: ${request.correlationId} - ${queueError.message}")
+            }
+        }
+    }
+
+    fun enqueue(payment: PaymentRequest): Boolean =
+        queue.trySend(QueuedPayment(payment))
+}
+
+object LeaderElection {
+    private val logger = LoggerFactory.getLogger(LeaderElection::class.java)
+
+    private val instanceId = UUID.randomUUID().toString()
+    private const val LOCK_KEY = "leader_lock"
+    private const val LOCK_TTL = 5L
+    private const val RENEW_MS = 3_000L
+
+    fun start() {
+        WorkerScope.scope.launch {
+            while (isActive) {
+                try {
+                    if (tryAcquireLock()) {
+                        logger.info("Leadership acquired")
+                        Health.start()
+                        while (isStillLeader()) {
+                            renewLock()
+                            delay(RENEW_MS)
+                        }
+                        logger.warn("Leadership lost")
+                        Health.stop()
+                    } else {
+                        delay(RENEW_MS)
+                    }
+                } catch (e: Exception) {
+                    logger.error("Leader election error: ${e.message}")
+                    delay(RENEW_MS)
+                }
+            }
+        }
+    }
+
+    private suspend fun tryAcquireLock(): Boolean =
+        Redis.withJedis { jedis ->
+            val result = jedis.set(LOCK_KEY, instanceId, SetParams().nx().ex(LOCK_TTL))
+            result == "OK"
+        }
+
+    private suspend fun isStillLeader(): Boolean =
+        Redis.withJedis { jedis -> jedis.get(LOCK_KEY) == instanceId }
+
+    private suspend fun renewLock() {
+        Redis.withJedis { jedis ->
+            if (jedis.get(LOCK_KEY) == instanceId) {
+                jedis.expire(LOCK_KEY, LOCK_TTL)
+            }
+        }
+    }
+}
+

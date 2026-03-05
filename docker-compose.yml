@@ -1,4 +1,4 @@
-x-service-templates: &gateway-build
+x-service-templates: &instance-build
   #image: sure44e/rinha-debut:latest
   build: .
   depends_on:
@@ -12,8 +12,6 @@ x-service-templates: &gateway-build
   environment:
     - REDIS_HOST=redis
     - REDIS_PORT=6379
-  volumes:
-    - sqlite-data:/app/data:rw
   networks:
     - api
     - payment-processor
@@ -29,25 +27,25 @@ services:
     volumes:
       - ./config/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
-      - gateway-1
-      - gateway-2
+      - instance-1
+      - instance-2
     deploy:
       resources:
         limits:
           cpus: '0.1'
-          memory: '30MB'
+          memory: '20MB'
     networks:
       - api
 
-  gateway-1:
-    <<: *gateway-build
-    container_name: gateway-1
-    hostname: gateway-1
+  instance-1:
+    <<: *instance-build
+    container_name: instance-1
+    hostname: instance-1
 
-  gateway-2:
-    <<: *gateway-build
-    container_name: gateway-2
-    hostname: gateway-2
+  instance-2:
+    <<: *instance-build
+    container_name: instance-2
+    hostname: instance-2
 
   redis:
     image: redis:7.2-alpine
@@ -56,8 +54,8 @@ services:
       "redis-server",
       "--save 300 10",
       "--appendonly no",
-      "--maxmemory 40mb",
-      "--maxmemory-policy allkeys-lru"
+      "--maxmemory 80mb",
+      "--maxmemory-policy volatile-lru"
     ]
     ports:
       - "6379:6379"
@@ -70,7 +68,7 @@ services:
       resources:
         limits:
           cpus: '0.2'
-          memory: '100MB'
+          memory: '80MB'
     networks:
       - api
 
@@ -80,8 +78,3 @@ networks:
     driver: bridge
   payment-processor:
     external: true
-
-
-volumes:
-  sqlite-data:
-    driver: local

@@ -4,8 +4,3 @@ ktor:
             - "com.rinha.ApplicationKt.module"
     deployment:
         port: 8003
-
-storage:
-    sqlite:
-        path: /data/payments.db
-

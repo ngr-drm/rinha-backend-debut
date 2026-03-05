@@ -1,4 +1,3 @@
-# Etapa 1: Build
 FROM gradle:8.7-jdk17 AS build
 WORKDIR /app
 
@@ -21,7 +20,7 @@ COPY --from=build --chown=app:app /app/build/libs/*-all.jar debut.jar
 
 USER app
 
-ENV JVM_OPTS="-XX:MaxRAMPercentage=70 \
+ENV JVM_OPTS="-XX:MaxRAMPercentage=60 \
               -XX:InitialRAMPercentage=50 \
               -Xss256k \
               -XX:+UseG1GC \

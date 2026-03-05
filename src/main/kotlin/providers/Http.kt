@@ -3,7 +3,6 @@ package com.rinha.providers
 import com.rinha.BigDecimalSerializer
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
-import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
@@ -13,21 +12,29 @@ import java.math.BigDecimal
 object Http {
 
     val client = HttpClient(CIO) {
+
         install(ContentNegotiation) {
             json(
                 Json {
-                serializersModule = SerializersModule {
-                    contextual(BigDecimal::class, BigDecimalSerializer)
+                    serializersModule = SerializersModule {
+                        contextual(BigDecimal::class, BigDecimalSerializer)
+                    }
+                    prettyPrint    = false
+                    isLenient      = true
+                    ignoreUnknownKeys = true
                 }
-                prettyPrint = true
-                isLenient = true
-            })
+            )
         }
-        install(HttpTimeout) {
-            requestTimeoutMillis = 15000
-            connectTimeoutMillis = 1000
-            socketTimeoutMillis = 30000
+
+        engine {
+            endpoint {
+                connectTimeout         = 10_000
+                requestTimeout         = 10_000
+                keepAliveTime          = 30_000
+                pipelineMaxSize        = 10
+                maxConnectionsPerRoute = 50
+                maxConnectionsCount    = 100
+            }
         }
     }
-
 }

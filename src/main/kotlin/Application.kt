@@ -1,8 +1,7 @@
 package com.rinha
 
-import com.rinha.lib.Workers
-import com.rinha.providers.RedisClient
-import com.rinha.providers.SQLiteManager
+import com.rinha.lib.*
+import com.rinha.providers.Redis
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.contentnegotiation.*
@@ -27,32 +26,32 @@ fun Application.module() {
                 serializersModule = SerializersModule {
                     contextual(BigDecimal::class, BigDecimalSerializer)
                 }
-                prettyPrint = true
+                prettyPrint = false
                 isLenient = true
+                ignoreUnknownKeys = true
             }
         )
     }
 
-    RedisClient.initialize()
-    SQLiteManager.upPaymentsTable("data/payments.db")
-    Workers.start()
+    Redis.initialize()
+
+    LeaderElection.start()
+    Inbound.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        Workers.stop()
-        RedisClient.close()
-        SQLiteManager.closeAll()
+        WorkerScope.stop()
+        Redis.close()
     })
 
     configureRouting()
 }
 
-
 object BigDecimalSerializer : KSerializer<BigDecimal> {
-    override val descriptor = PrimitiveSerialDescriptor("BigDecimal", PrimitiveKind.STRING)
+    override val descriptor = PrimitiveSerialDescriptor("BigDecimal", PrimitiveKind.DOUBLE)
     override fun serialize(encoder: Encoder, value: BigDecimal) {
-        encoder.encodeString(value.toString())
+        encoder.encodeDouble(value.toDouble())
     }
     override fun deserialize(decoder: Decoder): BigDecimal {
-        return BigDecimal(decoder.decodeString())
+        return BigDecimal(decoder.decodeDouble())
     }
 }
