@@ -95,6 +95,17 @@ object Activities {
         }
     }
 
+    suspend fun purgePayments() {
+        Redis.withJedis { jedis ->
+            jedis.del(ZSET_KEY)
+            // Also clear all dedup keys to avoid stale state across test runs
+            val paidKeys = jedis.keys("paid:*")
+            if (paidKeys.isNotEmpty()) {
+                jedis.del(*paidKeys.toTypedArray())
+            }
+        }
+    }
+
     suspend fun toAudit(from: String?, to: String?): Audit =
         Redis.withJedis { jedis ->
             val fromTs = from
@@ -127,6 +138,9 @@ object Activities {
                 }
             }
 
-            Audit(Summary(dCount, dSum), Summary(fCount, fSum))
+            Audit(
+                Summary(dCount, dSum.setScale(1, java.math.RoundingMode.HALF_UP)),
+                Summary(fCount, fSum.setScale(1, java.math.RoundingMode.HALF_UP))
+            )
         }
 }

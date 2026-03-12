@@ -52,6 +52,6 @@ object BigDecimalSerializer : KSerializer<BigDecimal> {
         encoder.encodeDouble(value.toDouble())
     }
     override fun deserialize(decoder: Decoder): BigDecimal {
-        return BigDecimal(decoder.decodeDouble())
+        return BigDecimal.valueOf(decoder.decodeDouble())
     }
 }

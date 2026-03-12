@@ -1,6 +1,8 @@
 package com.rinha.lib
 
+import com.rinha.lib.Activities.confirm
 import com.rinha.lib.Activities.getHealthierGateway
+import com.rinha.lib.Activities.sendPayment
 import com.rinha.providers.Http.client
 import com.rinha.providers.Redis
 import io.ktor.client.call.*
@@ -48,10 +50,10 @@ object Health {
             defaultHealth.failing -> {
                 Pair(Activities.fallbackURL, "fallback")
             }
-            defaultHealth.minResponseTime < 250 -> {
+            defaultHealth.minResponseTime < 120 -> {
                 Pair(Activities.defaultURL, "default")
             }
-            !fallbackHealth.failing && fallbackHealth.minResponseTime < defaultHealth.minResponseTime  -> {
+            !fallbackHealth.failing && fallbackHealth.minResponseTime < defaultHealth.minResponseTime * 3  -> {
                 Pair(Activities.fallbackURL, "fallback")
             }
             else -> {
@@ -106,7 +108,10 @@ object Inbound {
         while (true) {
             try {
                 val item = queue.get()
-                pay(item, workerId)
+                val requestedAt = java.time.Instant.now().toString()
+                WorkerScope.scope.launch {
+                    pay(item, requestedAt, workerId)
+                }
             } catch (e: Exception) {
                 logger.error("worker-$workerId general error: ${e.message}")
                 delay(100)
@@ -114,15 +119,21 @@ object Inbound {
         }
     }
 
-    private suspend fun pay(queued: QueuedPayment, workerId: Int) {
-        val request = queued.request
+    private suspend fun pay(queued: QueuedPayment, requestedAt: String, workerId: Int) {
+        val request = queued.request.copy(requestedAt = requestedAt)
         val attempts = queued.retries
+
+        // skip if already confirmed by another coroutine
+        val alreadyPaid = Redis.withJedis { jedis ->
+            jedis.exists("paid:${request.correlationId}")
+        }
+        if (alreadyPaid) return
 
         try {
             val (gatewayUrl, gatewayName) = getHealthierGateway()
 
-            if (Activities.sendPayment(gatewayUrl, request)) {
-                Activities.confirm(request, gatewayName)
+            if (sendPayment(gatewayUrl, request)) {
+                confirm(request, gatewayName)
                 return
             }
 
@@ -136,7 +147,7 @@ object Inbound {
             val backoffMs = (1000L * 2.0.pow(attempts.toDouble())).toLong().coerceAtMost(15000L)
             delay(backoffMs)
             try {
-                queue.put(QueuedPayment(request, attempts + 1))
+                queue.put(QueuedPayment(queued.request, attempts + 1))
             } catch (queueError: Exception) {
                 logger.error("[QUEUE_ERROR] worker-$workerId: ${request.correlationId} - ${queueError.message}")
             }

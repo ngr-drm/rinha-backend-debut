@@ -1,5 +1,6 @@
 package com.rinha
 
+import com.rinha.lib.Activities.purgePayments
 import com.rinha.lib.Activities.toAudit
 import com.rinha.lib.Inbound.enqueue
 import com.rinha.lib.PaymentRequest
@@ -8,7 +9,6 @@ import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import java.time.Instant
 import java.util.*
 
 fun Application.configureRouting() {
@@ -28,8 +28,7 @@ fun Application.configureRouting() {
 
             val payment = PaymentRequest(
                 correlationId = correlationId,
-                amount        = body.amount,
-                requestedAt   = Instant.now().toString()
+                amount        = body.amount
             )
 
             if (enqueue(payment)) {
@@ -47,6 +46,11 @@ fun Application.configureRouting() {
                 return@get
             }
             call.respond(HttpStatusCode.OK, summary)
+        }
+
+        post("/purge-payments") {
+            purgePayments()
+            call.respond(HttpStatusCode.OK)
         }
     }
 }
