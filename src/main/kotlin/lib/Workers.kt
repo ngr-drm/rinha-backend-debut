@@ -109,9 +109,7 @@ object Inbound {
             try {
                 val item = queue.get()
                 val requestedAt = java.time.Instant.now().toString()
-                WorkerScope.scope.launch {
-                    pay(item, requestedAt, workerId)
-                }
+                pay(item, requestedAt, workerId)
             } catch (e: Exception) {
                 logger.error("worker-$workerId general error: ${e.message}")
                 delay(100)
@@ -122,14 +120,20 @@ object Inbound {
     private suspend fun pay(queued: QueuedPayment, requestedAt: String, workerId: Int) {
         val request = queued.request.copy(requestedAt = requestedAt)
         val attempts = queued.retries
+        val lockKey = "lock:${request.correlationId}"
 
-        // skip if already confirmed by another coroutine
-        val alreadyPaid = Redis.withJedis { jedis ->
-            jedis.exists("paid:${request.correlationId}")
+        val acquired = Redis.withJedis { jedis ->
+            jedis.set(lockKey, "1", SetParams().nx().ex(30)) == "OK"
         }
-        if (alreadyPaid) return
+
+        if (!acquired) return
 
         try {
+            val alreadyPaid = Redis.withJedis { jedis ->
+                jedis.exists("paid:${request.correlationId}")
+            }
+            if (alreadyPaid) return
+
             val (gatewayUrl, gatewayName) = getHealthierGateway()
 
             if (sendPayment(gatewayUrl, request)) {
@@ -151,6 +155,8 @@ object Inbound {
             } catch (queueError: Exception) {
                 logger.error("[QUEUE_ERROR] worker-$workerId: ${request.correlationId} - ${queueError.message}")
             }
+        } finally {
+            Redis.withJedis { jedis -> jedis.del(lockKey) }
         }
     }
 
