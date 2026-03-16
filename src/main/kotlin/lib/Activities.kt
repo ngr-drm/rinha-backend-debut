@@ -82,18 +82,15 @@ object Activities {
         Redis.withJedis { jedis ->
             val timestamp = Instant.parse(order.requestedAt!!).toEpochMilli() / 1000.0
             val paymentJson = """{"correlation_id":"${order.correlationId}","amount":${order.amount},"processor":"$processor","requested_at":$timestamp}"""
-            val dedupKey = "paid:${order.correlationId}"
 
             jedis.eval(
                 """
-                if redis.call('EXISTS', KEYS[1]) == 1 then
-                    return 0
-                end
                 redis.call('SET', KEYS[1], '1', 'EX', 3600)
                 redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
+                redis.call('DEL', KEYS[3])
                 return 1
                 """.trimIndent(),
-                listOf(dedupKey, ZSET_KEY),
+                listOf("paid:${order.correlationId}", ZSET_KEY, "lock:${order.correlationId}"),
                 listOf(timestamp.toString(), paymentJson)
             )
         }
@@ -101,11 +98,14 @@ object Activities {
 
     suspend fun purgePayments() {
         Redis.withJedis { jedis ->
-            // also clear all dedup keys to avoid stale state across test runs
             jedis.del(ZSET_KEY)
             val paidKeys = jedis.keys("paid:*")
             if (paidKeys.isNotEmpty()) {
                 jedis.del(*paidKeys.toTypedArray())
+            }
+            val lockKeys = jedis.keys("lock:*")
+            if (lockKeys.isNotEmpty()) {
+                jedis.del(*lockKeys.toTypedArray())
             }
         }
     }

@@ -120,24 +120,51 @@ object Inbound {
         val request = queued.request.copy(requestedAt = requestedAt)
         val attempts = queued.retries
 
-        val alreadyPaid = Redis.withJedis { jedis ->
-            jedis.exists("paid:${request.correlationId}")
+        val lockResult = Redis.withJedis { jedis ->
+            jedis.eval(
+                """
+                if redis.call('EXISTS', KEYS[1]) == 1 then
+                    return 'already_paid'
+                end
+                if redis.call('SET', KEYS[2], '1', 'NX', 'EX', 30) then
+                    return 'acquired'
+                end
+                return 'locked'
+                """.trimIndent(),
+                listOf("paid:${request.correlationId}", "lock:${request.correlationId}"),
+                emptyList()
+            ) as String
         }
-        if (alreadyPaid) return
+
+        when (lockResult) {
+            "already_paid" -> return
+            "locked" -> {
+                if (attempts < MAX_RETRIES) {
+                    delay(100)
+                    queue.put(QueuedPayment(queued.request, attempts + 1))
+                }
+                return
+            }
+        }
 
         try {
             val (gatewayUrl, gatewayName) = getHealthierGateway()
             val (success, shouldConfirm) = sendPayment(gatewayUrl, request)
 
+            if (success && shouldConfirm) {
+                confirm(request, gatewayName)
+                return
+            }
+
             if (success) {
-                if (shouldConfirm) {
-                    confirm(request, gatewayName)
-                }
+                Redis.withJedis { it.del("lock:${request.correlationId}") }
                 return
             }
 
             throw Exception("payment failed")
         } catch (e: Exception) {
+            Redis.withJedis { it.del("lock:${request.correlationId}") }
+
             if (attempts + 1 >= MAX_RETRIES) {
                 logger.error("[PERMANENT_FAILURE] worker-$workerId: ${request.correlationId} after ${attempts + 1} attempts")
                 return
