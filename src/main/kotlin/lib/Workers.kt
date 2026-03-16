@@ -45,7 +45,6 @@ object Health {
         val fallbackHealth = fetchHealth(Activities.fallbackURL)
 
         val checkedAt = System.currentTimeMillis() / 1000.0
-
         val (url, name) = when {
             defaultHealth.failing -> {
                 Pair(Activities.fallbackURL, "fallback")
@@ -53,7 +52,7 @@ object Health {
             defaultHealth.minResponseTime < 120 -> {
                 Pair(Activities.defaultURL, "default")
             }
-            !fallbackHealth.failing && fallbackHealth.minResponseTime < defaultHealth.minResponseTime * 3  -> {
+            !fallbackHealth.failing && fallbackHealth.minResponseTime < defaultHealth.minResponseTime * 3 -> {
                 Pair(Activities.fallbackURL, "fallback")
             }
             else -> {
@@ -120,20 +119,8 @@ object Inbound {
     private suspend fun pay(queued: QueuedPayment, requestedAt: String, workerId: Int) {
         val request = queued.request.copy(requestedAt = requestedAt)
         val attempts = queued.retries
-        val lockKey = "lock:${request.correlationId}"
-
-        val acquired = Redis.withJedis { jedis ->
-            jedis.set(lockKey, "1", SetParams().nx().ex(30)) == "OK"
-        }
-
-        if (!acquired) return
 
         try {
-            val alreadyPaid = Redis.withJedis { jedis ->
-                jedis.exists("paid:${request.correlationId}")
-            }
-            if (alreadyPaid) return
-
             val (gatewayUrl, gatewayName) = getHealthierGateway()
 
             if (sendPayment(gatewayUrl, request)) {
@@ -141,7 +128,7 @@ object Inbound {
                 return
             }
 
-            throw Exception("Payment rejected by gateway")
+            throw Exception("payment failed")
         } catch (e: Exception) {
             if (attempts + 1 >= MAX_RETRIES) {
                 logger.error("[PERMANENT_FAILURE] worker-$workerId: ${request.correlationId} after ${attempts + 1} attempts")
@@ -155,8 +142,6 @@ object Inbound {
             } catch (queueError: Exception) {
                 logger.error("[QUEUE_ERROR] worker-$workerId: ${request.correlationId} - ${queueError.message}")
             }
-        } finally {
-            Redis.withJedis { jedis -> jedis.del(lockKey) }
         }
     }
 

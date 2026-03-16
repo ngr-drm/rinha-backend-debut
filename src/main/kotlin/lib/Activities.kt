@@ -67,7 +67,8 @@ object Activities {
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
-            response.status == HttpStatusCode.OK
+
+            response.status == HttpStatusCode.OK || response.status == HttpStatusCode.UnprocessableEntity
         } catch (e: Exception) {
             logger.warn("Gateway error [$url] for ${request.correlationId}: ${e.message}")
             false
@@ -78,18 +79,18 @@ object Activities {
         Redis.withJedis { jedis ->
             val timestamp = Instant.parse(order.requestedAt!!).toEpochMilli() / 1000.0
             val paymentJson = """{"correlation_id":"${order.correlationId}","amount":${order.amount},"processor":"$processor","requested_at":$timestamp}"""
-            val paidKey = "paid:${order.correlationId}"
+            val dedupKey = "paid:${order.correlationId}"
 
             jedis.eval(
                 """
                 if redis.call('EXISTS', KEYS[1]) == 1 then
                     return 0
                 end
-                redis.call('SET', KEYS[1], '1')
+                redis.call('SET', KEYS[1], '1', 'EX', 3600)
                 redis.call('ZADD', KEYS[2], ARGV[1], ARGV[2])
                 return 1
                 """.trimIndent(),
-                listOf(paidKey, ZSET_KEY),
+                listOf(dedupKey, ZSET_KEY),
                 listOf(timestamp.toString(), paymentJson)
             )
         }
@@ -97,8 +98,8 @@ object Activities {
 
     suspend fun purgePayments() {
         Redis.withJedis { jedis ->
+            // also clear all dedup keys to avoid stale state across test runs
             jedis.del(ZSET_KEY)
-            // Also clear all dedup keys to avoid stale state across test runs
             val paidKeys = jedis.keys("paid:*")
             if (paidKeys.isNotEmpty()) {
                 jedis.del(*paidKeys.toTypedArray())
