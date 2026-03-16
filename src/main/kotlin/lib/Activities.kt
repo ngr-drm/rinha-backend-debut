@@ -61,17 +61,20 @@ object Activities {
         return Pair(defaultURL, "default")
     }
 
-    suspend fun sendPayment(url: String, request: PaymentRequest): Boolean {
+    suspend fun sendPayment(url: String, request: PaymentRequest): Pair<Boolean, Boolean> {
         return try {
             val response = client.post("$url/payments") {
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
-
-            response.status == HttpStatusCode.OK || response.status == HttpStatusCode.UnprocessableEntity
+            when (response.status) {
+                HttpStatusCode.OK -> Pair(true, true)
+                HttpStatusCode.UnprocessableEntity -> Pair(true, false)
+                else -> Pair(false, false)
+            }
         } catch (e: Exception) {
             logger.warn("Gateway error [$url] for ${request.correlationId}: ${e.message}")
-            false
+            Pair(false, false)
         }
     }
 

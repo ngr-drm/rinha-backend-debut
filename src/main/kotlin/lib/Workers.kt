@@ -120,11 +120,19 @@ object Inbound {
         val request = queued.request.copy(requestedAt = requestedAt)
         val attempts = queued.retries
 
+        val alreadyPaid = Redis.withJedis { jedis ->
+            jedis.exists("paid:${request.correlationId}")
+        }
+        if (alreadyPaid) return
+
         try {
             val (gatewayUrl, gatewayName) = getHealthierGateway()
+            val (success, shouldConfirm) = sendPayment(gatewayUrl, request)
 
-            if (sendPayment(gatewayUrl, request)) {
-                confirm(request, gatewayName)
+            if (success) {
+                if (shouldConfirm) {
+                    confirm(request, gatewayName)
+                }
                 return
             }
 
