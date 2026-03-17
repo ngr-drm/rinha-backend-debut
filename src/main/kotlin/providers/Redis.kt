@@ -14,9 +14,9 @@ object Redis {
         val port = System.getenv("REDIS_PORT")?.toIntOrNull() ?: 6379
 
         val config = JedisPoolConfig().apply {
-            maxTotal             = 100
-            maxIdle              = 30
-            minIdle              = 10
+            maxTotal             = 20
+            maxIdle              = 10
+            minIdle              = 5
             testOnBorrow         = false
             testWhileIdle        = true
             blockWhenExhausted   = true

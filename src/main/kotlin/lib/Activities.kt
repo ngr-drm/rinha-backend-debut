@@ -69,7 +69,7 @@ object Activities {
             }
             when (response.status) {
                 HttpStatusCode.OK -> Pair(true, true)
-                HttpStatusCode.UnprocessableEntity -> Pair(true, false)
+                HttpStatusCode.UnprocessableEntity -> Pair(true, true)   // already processed — must still confirm locally
                 else -> Pair(false, false)
             }
         } catch (e: Exception) {
@@ -81,7 +81,7 @@ object Activities {
     suspend fun confirm(order: PaymentRequest, processor: String) {
         Redis.withJedis { jedis ->
             val timestamp = Instant.parse(order.requestedAt!!).toEpochMilli() / 1000.0
-            val paymentJson = """{"correlation_id":"${order.correlationId}","amount":${order.amount},"processor":"$processor","requested_at":$timestamp}"""
+            val paymentJson = """{"correlation_id":"${order.correlationId}","amount":${order.amount.toPlainString()},"processor":"$processor","requested_at":$timestamp}"""
 
             jedis.eval(
                 """
@@ -131,10 +131,10 @@ object Activities {
 
             for (json in paymentJsons) {
                 val processorMatch = json.substringAfter("\"processor\":\"").substringBefore("\"")
-                val amountMatch = json.substringAfter("\"amount\":").substringBefore(",")
+                val amountStr = json.substringAfter("\"amount\":").substringBefore(",\"processor\"")
 
-                if (processorMatch.isNotEmpty() && amountMatch.isNotEmpty()) {
-                    val amount = amountMatch.toBigDecimalOrNull() ?: continue
+                if (processorMatch.isNotEmpty() && amountStr.isNotEmpty()) {
+                    val amount = amountStr.toBigDecimalOrNull() ?: continue
                     when (processorMatch) {
                         "default"  -> { dCount++; dSum = dSum.add(amount) }
                         "fallback" -> { fCount++; fSum = fSum.add(amount) }

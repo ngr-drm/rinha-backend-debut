@@ -85,7 +85,7 @@ object Health {
 object Inbound {
     private val logger = LoggerFactory.getLogger(Inbound::class.java)
     private val queue = Queue<QueuedPayment>()
-    private val maxWorkers = System.getenv("MAX_CONCURRENT_PAYMENTS")?.toIntOrNull() ?: 2
+    private val maxWorkers = System.getenv("MAX_CONCURRENT_PAYMENTS")?.toIntOrNull() ?: 8
 
     @Volatile private var started = false
 
@@ -107,8 +107,7 @@ object Inbound {
         while (true) {
             try {
                 val item = queue.get()
-                val requestedAt = java.time.Instant.now().toString()
-                pay(item, requestedAt, workerId)
+                pay(item, workerId)
             } catch (e: Exception) {
                 logger.error("worker-$workerId general error: ${e.message}")
                 delay(100)
@@ -116,8 +115,8 @@ object Inbound {
         }
     }
 
-    private suspend fun pay(queued: QueuedPayment, requestedAt: String, workerId: Int) {
-        val request = queued.request.copy(requestedAt = requestedAt)
+    private suspend fun pay(queued: QueuedPayment, workerId: Int) {
+        val request = queued.request
         val attempts = queued.retries
 
         val lockResult = Redis.withJedis { jedis ->
@@ -126,7 +125,7 @@ object Inbound {
                 if redis.call('EXISTS', KEYS[1]) == 1 then
                     return 'already_paid'
                 end
-                if redis.call('SET', KEYS[2], '1', 'NX', 'EX', 30) then
+                if redis.call('SET', KEYS[2], '1', 'NX', 'EX', 60) then
                     return 'acquired'
                 end
                 return 'locked'
@@ -170,7 +169,7 @@ object Inbound {
                 return
             }
 
-            val backoffMs = (1000L * 2.0.pow(attempts.toDouble())).toLong().coerceAtMost(15000L)
+            val backoffMs = (500L * 2.0.pow(attempts.toDouble())).toLong().coerceAtMost(3000L)
             delay(backoffMs)
             try {
                 queue.put(QueuedPayment(queued.request, attempts + 1))
