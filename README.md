@@ -1,14 +1,11 @@
 # debut
 #### Challenge ***"rinha de backend 2025"*** (I did not participate officially).
 
-Service to mediate payment requests.
+API to mediate payment requests.
 
-Before running the project, you need to make sure that the containers of the payment gateways are running.
+We need to ensure that the payment gateway containers are running: [official documentation](https://github.com/zanfranceschi/rinha-de-backend-2025/blob/main/INSTRUCOES.md).
 
-To run the payment gateways follow the [official documentation](https://github.com/zanfranceschi/rinha-de-backend-2025/blob/main/INSTRUCOES.md).
-
-
-Build and run the project:
+To build and run the API:
 
 ```
 docker compose up --build
